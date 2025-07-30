@@ -23,7 +23,7 @@ df_all$RH <- as.numeric(df_all$RH)
 df_all$temp <- as.numeric(df_all$temp)
 df_all$TDD <- as.numeric(df_all$TDD)
 
-# solda_radiation variables were ultimately not included in the model variable selection
+# solar_radiation variables were ultimately not included in the model variable selection
 # because they were strongly correlated with TDD, thus biasing the predictions.
 # Also, they included a lot of missing values, thus making TDD a better variable choice.
 
@@ -35,8 +35,8 @@ pca <- function(df){
   colnames(dataPCA) <- (colnames(subset(df, select = c(cumul_precipit_1Jan, nb_days_rainfall_30d, VPD,
                                                        RH, temp, TDD))))
   pca <- prcomp(dataPCA, scale. = T)
-  summary(pca)
-  pca$rotation
+  print(summary(pca))
+  print(pca$rotation)
   ## PLOTS
   # specifying MTG categories for PCA groups
   MTG_cat <- df$MTG
@@ -109,11 +109,124 @@ model_Nspores10d <- function(df){
   # glance(Nspores_model)
 }
 
+
+### Random Forest and Partition Trees (decision trees)
+random_forest <- function(df){
+  
+  require(randomForest)
+  require(caret)
+  
+  ### RANDOM FOREST COMPUTAION ON ALL EXPLANATORY VARIABLES
+  
+  # dataRF <- subset(df, select = -c(date, solar_radiation_30d, solar_radiation_1Jan, MTG, maturity, nb_germ_oosp_1d, nb_germ_oosp_10d))
+  dataRF <- as.data.frame(cbind(df$cumul_precipit_1Jan, df$nb_days_rainfall_30d, df$VPD,
+                                df$RH, df$temp, df$TDD))
+  # specifying MTG categories for PCA groups
+  MTG_cat <- df$MTG
+  for (i in 1:length(MTG_cat)) {
+    if (MTG_cat[i] < 3) {
+      MTG_cat[i] <- "1-2"
+    }
+    if (MTG_cat[i] > 2) {
+      MTG_cat[i] <- "3-10"
+    }
+  }
+  
+  colnames(dataRF) <- colnames(subset(df, select = c(cumul_precipit_1Jan, nb_days_rainfall_30d, VPD,
+                                                      RH, temp, TDD)))
+  
+  dataRF$MTG_cat <- MTG_cat
+  
+  
+  dataRF$MTG_cat <- as.factor(dataRF$MTG_cat)
+  set.seed(111)
+  ind <- sample(2, nrow(dataRF), replace = TRUE, prob = c(0.7, 0.3))
+  train <- dataRF[ind == 1,]
+  train$MTG_cat <- factor(train$MTG_cat)
+  test <- dataRF[ind == 2,]
+  test$MTG <- factor(test$MTG_cat)
+  
+  rf <- randomForest(MTG_cat~., data = train, proximity = TRUE, mtry = 3)
+  print(rf)
+  plot(rf)
+  
+  p1 <- predict(rf, train)
+  confusionMatrix(p1, train$MTG_cat)
+  
+  p2 <- predict(rf, test)
+  confusionMatrix(p2, test$MTG_cat)
+  
+  
+  t <- tuneRF(subset(train, select = -c(MTG_cat)), train[,"MTG_cat"],
+              stepFactor = 0.5,
+              plot = TRUE,
+              ntreeTry = 150,
+              trace = TRUE,
+              improve = 0.05)
+  
+  hist(treesize(rf),
+       main = "No. of Nodes for the Trees",
+       col = "green")
+  # Variable Importance
+  varImpPlot(rf,
+             sort = T,
+             n.var = 6,
+             main = "Ranked Variable Importance")
+  print(importance(rf))
+  #MeanDecreaseGini
+  
+  partialPlot(rf, train, TDD, as.factor("1-2"))
+  partialPlot(rf, train, TDD, "3-10")
+  partialPlot(rf, train, nb_days_rainfall_30d, "1-2")
+  partialPlot(rf, train, nb_days_rainfall_30d, "3-10")
+  partialPlot(rf, train, TDD, "1-2")
+  partialPlot(rf, train, TDD, "3-10")
+  
+  # devtools::install_github("araastat/reprtree")
+  
+  require(devtools)
+  install_github("araastat/reprtree")
+  library(reprtree)
+  
+  ## Repartition tree / Decision tree
+  reprtree:::plot.getTree(rf)
+  
+  ## MDS plot
+  MDSplot(rf, train$MTG_cat)
+  
+  require("rpart")
+  require("rpart.plot")
+  
+  ### PARTITION TREES COMPUTAION ON SELECTED VARIABLES ONLY
+  
+  dataRpart <- subset(df, select = c(cumul_precipit_1Jan, nb_days_rainfall_30d, VPD,
+                                     RH, temp, TDD))
+  dataRpart <- matrix(as.numeric(unlist(dataRpart)),nrow = nrow(dataRpart))
+  colnames(dataRpart) <- colnames(subset(df, select = c(cumul_precipit_1Jan, nb_days_rainfall_30d, VPD,
+                                                        RH, temp, TDD)))
+  dataRpart <- as.data.frame(dataRpart)
+  
+  ## Decision tree for MTG
+  rf1 <- rpart(df$MTG ~., data = dataRpart, method = "poisson")
+  rpart.plot(rf1)
+  
+  ## Decision tree for Nspores1d
+  rf2 <- rpart(df$nb_germ_oosp_1d ~., data = dataRpart, method = "poisson")
+  rpart.plot(rf2)
+  
+  ## Decision tree for Nspores10d
+  rf3 <- rpart(df$nb_germ_oosp_10d ~., data = dataRpart, method = "poisson")
+  rpart.plot(rf3)
+  
+}
+
+
 ## ALL BBCH DATASET
 model_MGT(df_all)
 model_Nspores1d(df_all)
 model_Nspores10d(df_all)
 pca(df_all)
+random_forest(df_all)
 
 ## DATASET BBCH 0:12
 df <- df_all %>% filter(df_all$BBCH < 13)
@@ -121,6 +234,7 @@ model_MGT(df)
 model_Nspores1d(df)
 model_Nspores10d(df)
 pca(df)
+random_forest(df)
 
 ## DATASET BBCH 13:+
 df <- df_all %>% filter(df_all$BBCH >= 13)
@@ -128,3 +242,4 @@ model_MGT(df)
 model_Nspores1d(df)
 model_Nspores10d(df)
 pca(df)
+random_forest(df)
